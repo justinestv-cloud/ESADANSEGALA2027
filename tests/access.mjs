@@ -26,3 +26,14 @@ assert.equal((await PUT(req(null))).status,401);assert.equal((await PUT(req('str
 for(const email of ['justine.stv@gmail.com','kemie.stv@gmail.com']){const access=await(await GET(req(email))).json();assert.equal(access.canEdit,true);assert.equal((await PUT(req(email,row.revision))).status,200)}
 assert.equal((await PUT(req('justine.stv@gmail.com',46))).status,409);assert.equal((await PUT(req('kemie.stv@gmail.com',0))).status,409);assert.equal(row.revision,48);
 console.log('PASS: public reading; two editors; unauthorized and cross-origin writes blocked; stale edits rejected.');
+const doc={id:'doc-1',title:'Programme',url:'https://example.com/programme.pdf',category:'Organisation',notes:''};
+function docRequest(documents,revision=row.revision){return new Request('https://gala.test/api/state',{method:'PUT',headers:{'oai-authenticated-user-id':'test-user','oai-authenticated-user-email':'kemie.stv@gmail.com',origin:'https://gala.test','content-type':'application/json'},body:JSON.stringify({data:{name:'Gala',tasks:[],volunteers:[],documents},revision})})}
+assert.equal((await PUT(docRequest([{...doc,url:'javascript:alert(1)'}]))).status,400);
+assert.equal((await PUT(docRequest([doc]))).status,200);
+assert.deepEqual(JSON.parse(row.data).documents,[doc]);
+assert.equal((await PUT(req('justine.stv@gmail.com',row.revision))).status,200);
+assert.deepEqual(JSON.parse(row.data).documents,[doc]);
+assert.deepEqual((await(await GET(new Request('https://gala.test/api/state'))).json()).data.documents,[doc]);
+assert.equal((await PUT(docRequest([]))).status,200);
+assert.deepEqual(JSON.parse(row.data).documents,[]);
+console.log('PASS: document create/read/delete, unsafe links blocked, old clients preserve documents');

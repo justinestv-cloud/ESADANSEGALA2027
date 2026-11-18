@@ -27,6 +27,15 @@ export async function PUT(req: Request) {
   try { body = await req.json(); } catch { return new Response('Données invalides', {status:400, headers}); }
   if (!body?.data || !Array.isArray(body.data.tasks) || !Array.isArray(body.data.volunteers) || !Number.isInteger(body.revision) || body.revision < 0)
     return new Response('Données invalides', {status:400, headers});
+  if (body.data.documents !== undefined && (!Array.isArray(body.data.documents) || body.data.documents.some((d:any)=>{
+    if (!d || typeof d.id!=='string' || typeof d.title!=='string' || !d.title.trim() || d.title.length>200 || typeof d.url!=='string' || typeof d.category!=='string' || typeof d.notes!=='string' || d.notes.length>2000) return true;
+    try {const u=new URL(d.url);return !['https:','http:'].includes(u.protocol)||Boolean(u.username||u.password);} catch {return true;}
+  }))) return new Response('Document invalide : vérifiez le titre et le lien http ou https.', {status:400, headers});
+  // Older open clients do not send documents: preserve them when saving tasks.
+  if (body.data.documents === undefined) {
+    const existing = await env.DB!.prepare('SELECT data, revision FROM gala_state WHERE owner = ?').bind(GALA_KEY).first();
+    body.data.documents = existing ? (JSON.parse(existing.data as string).documents || []) : [];
+  }
   const data = JSON.stringify(body.data);
   if (data.length > 1000000) return new Response('Données trop volumineuses', {status:413, headers});
   const statement = body.revision === 0
