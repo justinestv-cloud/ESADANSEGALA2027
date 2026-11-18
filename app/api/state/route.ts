@@ -1,3 +1,38 @@
 import { env } from 'cloudflare:workers';
-export async function GET(req:Request){const owner=req.headers.get('oai-authenticated-user-id');if(!owner)return new Response('Connexion nécessaire',{status:401});const row=await env.DB!.prepare('SELECT data, revision FROM gala_state WHERE owner = ?').bind(owner).first();return Response.json(row?{data:JSON.parse(row.data as string),revision:row.revision}:{data:null,revision:0});}
-export async function PUT(req:Request){const owner=req.headers.get('oai-authenticated-user-id');if(!owner)return new Response('Connexion nécessaire',{status:401});if(req.headers.get('origin')&&req.headers.get('origin')!==new URL(req.url).origin)return new Response('Origine refusée',{status:403});const body=await req.json() as any;if(!body.data||!Array.isArray(body.data.tasks)||!Array.isArray(body.data.volunteers)||!Number.isInteger(body.revision))return new Response('Données invalides',{status:400});const data=JSON.stringify(body.data);if(data.length>1000000)return new Response('Données trop volumineuses',{status:413});const result=await env.DB!.prepare('INSERT INTO gala_state (owner,data,revision) VALUES (?,?,1) ON CONFLICT(owner) DO UPDATE SET data=excluded.data, revision=gala_state.revision+1 WHERE gala_state.revision=?').bind(owner,data,body.revision).run();if(!result.meta.changes)return new Response('Une autre fenêtre a modifié le projet. Rechargez la page.',{status:409});return Response.json({revision:body.revision+1});}
+
+// Keep the existing gala record so the shared board retains all saved tasks.
+const GALA_KEY = 'nWOFERISRWhCvNvI0CDvNjRd6BfNf2f9EN4QTH7SKJB5QECYbMPbhG';
+const EDITORS = new Set(['justine.stv@gmail.com', 'kemie.stv@gmail.com']);
+export const dynamic = 'force-dynamic';
+function identity(req: Request) {
+  const signedIn = Boolean(req.headers.get('oai-authenticated-user-id'));
+  const email = (req.headers.get('oai-authenticated-user-email') || '').trim().toLowerCase();
+  return { signedIn, canEdit: signedIn && EDITORS.has(email) };
+}
+const headers = { 'Cache-Control': 'private, no-store' };
+export async function GET(req: Request) {
+  const access = identity(req);
+  const row = await env.DB!.prepare('SELECT data, revision FROM gala_state WHERE owner = ?').bind(GALA_KEY).first();
+  const data = row ? JSON.parse(row.data as string) : null;
+  // Volunteer availability and personal notes remain visible to coordinators only.
+  if (data && !access.canEdit) data.volunteers = [];
+  return Response.json({data, revision: row?.revision || 0, ...access}, {headers});
+}
+export async function PUT(req: Request) {
+  const access = identity(req);
+  if (!access.signedIn) return new Response('Connectez-vous pour modifier le gala.', {status:401, headers});
+  if (!access.canEdit) return new Response('La modification est réservée à Justine et Kémie.', {status:403, headers});
+  if (req.headers.get('origin') !== new URL(req.url).origin) return new Response('Origine refusée', {status:403, headers});
+  let body: any;
+  try { body = await req.json(); } catch { return new Response('Données invalides', {status:400, headers}); }
+  if (!body?.data || !Array.isArray(body.data.tasks) || !Array.isArray(body.data.volunteers) || !Number.isInteger(body.revision) || body.revision < 0)
+    return new Response('Données invalides', {status:400, headers});
+  const data = JSON.stringify(body.data);
+  if (data.length > 1000000) return new Response('Données trop volumineuses', {status:413, headers});
+  const statement = body.revision === 0
+    ? env.DB!.prepare('INSERT OR IGNORE INTO gala_state (owner,data,revision) VALUES (?,?,1)').bind(GALA_KEY,data)
+    : env.DB!.prepare('UPDATE gala_state SET data=?, revision=revision+1 WHERE owner=? AND revision=?').bind(data,GALA_KEY,body.revision);
+  const result = await statement.run();
+  if (!result.meta.changes) return new Response('Kémie ou Justine a modifié le projet entre-temps. Fermez cette fenêtre puis rechargez avant de reprendre votre modification.', {status:409, headers});
+  return Response.json({revision:body.revision+1}, {headers});
+}
